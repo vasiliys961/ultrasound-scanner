@@ -5,8 +5,52 @@ import { LanguageSwitch, useLocale } from '@/components/LocaleProvider'
 import { DiagnosticReview } from '@/components/scan/DiagnosticReview'
 import { MeasurementFields } from '@/components/scan/MeasurementFields'
 import { useScanSession } from '@/components/scan/useScanSession'
-import { moduleCopy } from '@/lib/i18n/copy'
+import { moduleCopy, type MessageKey } from '@/lib/i18n/copy'
 import { ATLAS_LINKS } from '@/lib/references/atlas'
+
+const TRACKING_KEY: Record<string, MessageKey> = {
+  off: 'tracking_off',
+  unstable: 'tracking_unstable',
+  tracking: 'tracking_tracking',
+  stable: 'tracking_stable',
+  lost: 'tracking_lost',
+}
+
+const GUIDANCE_KEY: Record<string, MessageKey> = {
+  idle: 'visionIdle',
+  hold_steady: 'visionHold',
+  high_motion: 'visionMotion',
+  plane_unconfirmed: 'visionPlaneUnknown',
+  plane_found: 'visionPlaneFound',
+  turn_for_view: 'visionTurn',
+  quality_ok: 'visionQualityOk',
+}
+
+const PLANE_KEY: Record<string, MessageKey> = {
+  longitudinal: 'planeLongitudinal',
+  transverse: 'planeTransverse',
+  oblique: 'planeOblique',
+  apical: 'planeApical',
+  parasternal_long: 'planeParasternalLong',
+  parasternal_short: 'planeParasternalShort',
+  subcostal: 'planeSubcostal',
+  suprasternal: 'planeSuprasternal',
+}
+
+const ORGAN_KEY: Record<string, MessageKey> = {
+  thyroid: 'organThyroid',
+  carotid: 'organCarotid',
+  jugular: 'organJugular',
+  lung: 'organLung',
+  pleura: 'organPleura',
+  heart: 'organHeart',
+  ivc: 'organIvc',
+  bladder: 'organBladder',
+  kidney: 'organKidney',
+  liver: 'organLiver',
+  gallbladder: 'organGallbladder',
+  aorta: 'organAorta',
+}
 
 function deviceLabel(label: string, unnamed: (n: string) => string): string {
   const match = label.match(/^(?:Видеовход|Video input) (\d+)$/)
@@ -97,6 +141,25 @@ export function ScanScreen() {
               </label>
             </div>
           ) : null}
+          <label className="check">
+            <input type="checkbox" checked={session.visionOn} onChange={(event) => session.setVisionEnabled(event.target.checked)} />
+            {t('visionToggle')}
+          </label>
+          {session.visionOn && session.visionPanel ? (
+            <div className="banner">
+              <p>{t('quality')} {session.visionPanel.quality === null ? '—' : session.visionPanel.quality.toFixed(2)} · {t('visionAnatomy')} {session.visionPanel.anatomy ? t(ORGAN_KEY[session.visionPanel.anatomy] ?? 'visionAnatomy') : '—'} · {t('visionPlane')} {session.visionPanel.plane && PLANE_KEY[session.visionPanel.plane] ? t(PLANE_KEY[session.visionPanel.plane]) : '—'}</p>
+              <p>{t('visionConfidence')} {session.visionPanel.confidence === null ? '—' : session.visionPanel.confidence.toFixed(2)} · {t('visionTracking')} {t(TRACKING_KEY[session.visionPanel.tracking] ?? 'tracking_off')} · {t('visionProtocol')} {session.visionPanel.protocolDone} / {session.visionPanel.protocolTotal}</p>
+              <p>
+                {t('visionGuidance')}: {session.visionPanel.guidance === 'turn_for_view' && session.visionPanel.missingView
+                  ? t('visionTurn', { view: viewTitle(module.id, session.visionPanel.missingView) })
+                  : t(GUIDANCE_KEY[session.visionPanel.guidance] ?? 'visionIdle')}
+              </p>
+              <p>{t('visionEvidence', { frames: session.visionPanel.frames, clips: session.visionPanel.clips, observations: session.visionPanel.observations, candidates: session.visionPanel.candidates })}</p>
+              {session.visionPanel.uncertainty ? <p className="hint">{text(session.visionPanel.uncertainty)}</p> : null}
+            </div>
+          ) : (
+            <p className="hint">{session.visionOn ? t('visionIdle') : t('visionOff')}</p>
+          )}
           <div className="metrics">
             <div><strong>{session.score ? session.score.qualityScore.toFixed(2) : '—'}</strong><span>{t('quality')}</span></div>
             <div><strong>{session.score ? session.score.sharpness.toFixed(2) : '—'}</strong><span>{t('sharpness')}</span></div>

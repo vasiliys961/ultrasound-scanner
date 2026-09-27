@@ -16,6 +16,7 @@ import { draftToManual, emptyDraft, type MeasurementDraft } from '@/lib/ultrasou
 import { getOrganModule, listOrganModules } from '@/lib/ultrasound-modules/registry'
 import { guidanceReady, guidanceWaitMs } from '@/lib/guidance/read-pace'
 import { QualityStreakTracker, scoreRaster, technicalHint } from '@/lib/quality-gate'
+import { panelFromPerception, type VisionPanel } from '@/lib/vision-engine/guidance'
 import { rasterToGray } from '@/lib/quality/gray'
 import { SessionQualityLog } from '@/lib/training-log/session-log'
 import { TrainingFrameLog } from '@/lib/training-log/frame-log'
@@ -79,6 +80,12 @@ export function useScanSession() {
   const [diagnosing, setDiagnosing] = useState(false)
   const [forwardState, setForwardState] = useState('')
   const [listening, setListening] = useState(false)
+  const [visionOn, setVisionOn] = useState(false)
+  const [visionPanel, setVisionPanel] = useState<VisionPanel | null>(null)
+  const visionOnRef = useRef(false)
+  const visionSessionRef = useRef<string | null>(null)
+  const lastVisionPostRef = useRef(0)
+  const visionTicketRef = useRef(0)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const sampleRef = useRef<HTMLCanvasElement>(null)
@@ -128,6 +135,9 @@ export function useScanSession() {
     diametersRef.current = []
     streakRef.current.reset()
     stepKeyRef.current = ''
+    visionSessionRef.current = null
+    lastVisionPostRef.current = 0
+    setVisionPanel(null)
     const shown = Date.now()
     stepShownAtRef.current = shown
     setStepShownAt(shown)
@@ -239,6 +249,92 @@ export function useScanSession() {
       }
       const paced = guidanceReady(modeRef.current, stepShownAtRef.current, frame.timestamp)
       if (view && paced && streak.ready && nextScore.qualityScore >= current.qualityThreshold) remember(view)
+      const pending = current.requiredViews.find((name) => !capturesRef.current[name]) ?? null
+      noteVision({ imageData: raster, timestamp: frame.timestamp, sequenceNumber: frame.sequenceNumber }, nextScore, streak.ready, pending)
+    }
+  }
+
+  function noteVision(frame: UltrasoundFrame, nextScore: QualityScore, streakReady: boolean, view: string | null) {
+    if (!visionOnRef.current) return
+    const current = moduleRef.current
+    if (!current) return
+    const motion = 1 - nextScore.stability
+    const tracking = streakReady ? 'stable' : nextScore.qualityScore >= current.qualityThreshold ? 'tracking' : 'unstable'
+    setVisionPanel((prev) => {
+      const local = panelFromPerception({
+        quality: nextScore.qualityScore,
+        motion,
+        tracking,
+        pack: null,
+        protocolDone: current.requiredViews.filter((name) => capturesRef.current[name]).length,
+        protocolTotal: current.requiredViews.length,
+        missingView: view,
+        cloudNote: prev?.uncertainty ?? null,
+      })
+      return {
+        ...local,
+        anatomy: prev?.anatomy ?? null,
+        plane: prev?.plane ?? null,
+        confidence: prev?.confidence ?? null,
+        frames: prev?.frames ?? 0,
+        clips: prev?.clips ?? 0,
+        observations: prev?.observations ?? 0,
+        candidates: prev?.candidates ?? 0,
+      }
+    })
+    if (!streakReady || nextScore.qualityScore < current.qualityThreshold) return
+    if (frame.timestamp - lastVisionPostRef.current < 2000) return
+    lastVisionPostRef.current = frame.timestamp
+    const ticket = ++visionTicketRef.current
+    void sendVisionFrame(frame, ticket)
+  }
+
+  async function sendVisionFrame(frame: UltrasoundFrame, ticket: number) {
+    const current = moduleRef.current
+    if (!current || !visionOnRef.current) return
+    try {
+      let sessionId = visionSessionRef.current
+      if (!sessionId) {
+        const opened = await fetch('/vision/session', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ studyId: studyIdRef.current, moduleId: current.id }),
+        })
+        const created = (await opened.json()) as { id?: string; error?: string }
+        if (!opened.ok || !created.id) throw new Error(created.error ?? 'сессия зрения не открылась')
+        sessionId = created.id
+        visionSessionRef.current = sessionId
+      }
+      const response = await fetch('/vision/frame', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          sequenceNumber: frame.sequenceNumber,
+          timestamp: frame.timestamp,
+          width: frame.imageData.width,
+          height: frame.imageData.height,
+          rgbaBase64: bytesToBase64(frame.imageData.data),
+          confirmedViews: Object.keys(capturesRef.current),
+        }),
+      })
+      const payload = (await response.json()) as { panel?: VisionPanel; error?: string }
+      if (!response.ok || !payload.panel) throw new Error(payload.error ?? 'кадр зрения не принят')
+      if (visionOnRef.current && ticket === visionTicketRef.current) setVisionPanel(payload.panel)
+    } catch (cause) {
+      if (!visionOnRef.current) return
+      const message = cause instanceof Error ? cause.message : 'слой зрения недоступен'
+      setVisionPanel((prev) => (prev ? { ...prev, uncertainty: message } : prev))
+    }
+  }
+
+  function setVisionEnabled(enabled: boolean) {
+    visionOnRef.current = enabled
+    setVisionOn(enabled)
+    if (!enabled) {
+      visionSessionRef.current = null
+      lastVisionPostRef.current = 0
+      setVisionPanel(null)
     }
   }
 
@@ -460,6 +556,9 @@ export function useScanSession() {
     diagnosing,
     forwardState,
     listening,
+    visionOn,
+    visionPanel,
+    setVisionEnabled,
     videoRef,
     sampleRef,
     previewRef,
